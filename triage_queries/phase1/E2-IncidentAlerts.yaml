@@ -1,0 +1,28 @@
+# E2: Alerts that make up the incident
+# AlertIds stays dynamic after mv-expand — the tostring() extend is mandatory
+# before the join, otherwise the join key never matches.
+# SecurityAlert has no CreatedTimeUtc; StartTime/EndTime are the alert window.
+
+id: E2-IncidentAlerts
+name: Correlated alerts with tactics
+description: Alert-level detail behind the incident, for cohesion checking
+phase: 1
+requires: [incident]
+query: |
+  SecurityIncident
+  | where TimeGenerated > ago(30d)
+  | where ProviderIncidentId == "{incident}" or tostring(IncidentNumber) == "{incident}"
+  | summarize arg_max(TimeGenerated, *) by IncidentNumber
+  | mv-expand AlertId = AlertIds
+  | extend AlertId = tostring(AlertId)
+  | join kind=leftouter (
+      SecurityAlert
+      | where TimeGenerated > ago(30d)
+      | summarize arg_max(TimeGenerated, *) by SystemAlertId
+      | project SystemAlertId, AlertName, AlertSeverity, ProviderName,
+                StartTime, EndTime, Tactics, Techniques
+    ) on $left.AlertId == $right.SystemAlertId
+  | project AlertId, AlertName, AlertSeverity, ProviderName, StartTime, EndTime,
+            Tactics, Techniques
+  | order by StartTime asc
+  | take 40

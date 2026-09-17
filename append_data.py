@@ -74,6 +74,18 @@ def fetch_and_append_new_data():
                 auto_enrich_new_incidents(new_incident_ids)
         except Exception as e:
             print(f"⚠️  Auto-enrichment skipped due to error: {e}")
+
+    # Autonomous triage for new incidents (if enabled)
+    if new_incident_ids:
+        try:
+            from config_manager import get_config
+            triage_on = (get_config('TRIAGE_ENABLED') or '').lower() in ('true', '1', 'yes', 'on')
+            if triage_on:
+                print("\n🤖 Running autonomous triage on new incidents...")
+                from triage_agent import auto_triage_incidents
+                auto_triage_incidents(new_incident_ids)
+        except Exception as e:
+            print(f"⚠️  Auto-triage skipped due to error: {e}")
     
     # Fetch and append alerts
     print("\n4️⃣  Fetching alerts for incidents...")

@@ -1,0 +1,16 @@
+# E6: Entra ID Protection risk detections for the accounts
+# AADUserRiskEvents is the Data Lake table (AADRiskySignIns does not exist).
+
+id: E6-AccountRiskEvents
+name: Identity Protection risk detections
+description: Risk event types, levels and states per account
+phase: 2
+requires: [account]
+query: |
+  AADUserRiskEvents
+  | where TimeGenerated > ago({days}d)
+  | where UserPrincipalName in~ ({account_list})
+  | project TimeGenerated, UserPrincipalName, RiskEventType, RiskLevel, RiskState,
+            RiskDetail, IpAddress, DetectionTimingType, Source
+  | order by TimeGenerated desc
+  | take 40

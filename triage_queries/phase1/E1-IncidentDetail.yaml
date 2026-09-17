@@ -1,0 +1,20 @@
+# E1: Incident record of truth
+# Pulls the Sentinel-side incident so the verdict is written against current
+# status/classification rather than the cached dashboard row.
+# ProviderIncidentId is the Defender XDR id the dashboard stores; IncidentNumber
+# is Sentinel-local. Both are matched so either id form resolves.
+
+id: E1-IncidentDetail
+name: Incident record and current classification
+description: Authoritative SecurityIncident row for this incident
+phase: 1
+requires: [incident]
+query: |
+  SecurityIncident
+  | where TimeGenerated > ago(30d)
+  | where ProviderIncidentId == "{incident}" or tostring(IncidentNumber) == "{incident}"
+  | summarize arg_max(TimeGenerated, *) by IncidentNumber
+  | project TimeGenerated, IncidentNumber, ProviderIncidentId, Title, Severity,
+            Status, Classification, ClassificationReason, ClassificationComment,
+            Owner, AlertIds, LastModifiedTime, IncidentUrl
+  | take 5

@@ -1,0 +1,28 @@
+# E5: Source IPs in the incident window that are absent from the 90-day baseline
+# This is the concrete baseline comparison behind "anomalous". Zero rows is a
+# meaningful negative finding: the source IPs are historically normal.
+
+id: E5-AccountNewSourceIPs
+name: New source IPs versus 90-day baseline
+description: Leftanti join of recent sign-in IPs against the prior 90-day baseline
+phase: 2
+requires: [account]
+query: |
+  let targets = {account_list};
+  let recent =
+      SigninLogs
+      | where TimeGenerated > ago({days}d)
+      | where UserPrincipalName in~ (targets)
+      | extend Country = tostring(parse_json(tostring(LocationDetails)).countryOrRegion)
+      | summarize SignIns = count(), Success = countif(ResultType == 0),
+                  Countries = make_set(Country, 5), LastSeen = max(TimeGenerated)
+                by UserPrincipalName, IPAddress;
+  let baseline =
+      SigninLogs
+      | where TimeGenerated between (ago(90d) .. ago({days}d))
+      | where UserPrincipalName in~ (targets)
+      | distinct UserPrincipalName, IPAddress;
+  recent
+  | join kind=leftanti baseline on UserPrincipalName, IPAddress
+  | order by SignIns desc
+  | take 40

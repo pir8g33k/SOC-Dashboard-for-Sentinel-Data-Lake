@@ -1,0 +1,23 @@
+# E9: Tenant threat-intelligence matches for the incident's IPs
+# Only the indicators actually present in this workspace — no external feed
+# guesswork. Zero rows means "no TI match in this tenant", not "clean".
+
+id: E9-IPThreatIntel
+name: Threat intelligence matches for source IPs
+description: Active ThreatIntelligenceIndicator hits on the incident's IPs
+phase: 2
+requires: [ip]
+query: |
+  let targets = {ip_list};
+  ThreatIntelligenceIndicator
+  | where TimeGenerated > ago(90d)
+  | where Active == true
+  | where NetworkIP in (targets)
+       or NetworkSourceIP in (targets)
+       or NetworkDestinationIP in (targets)
+       or EmailSourceIpAddress in (targets)
+  | summarize arg_max(TimeGenerated, *) by IndicatorId
+  | project TimeGenerated, NetworkIP, NetworkSourceIP, NetworkDestinationIP,
+            ThreatType, ConfidenceScore, ThreatSeverity, Description,
+            SourceSystem, ExpirationDateTime
+  | take 30

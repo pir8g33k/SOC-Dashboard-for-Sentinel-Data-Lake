@@ -1,0 +1,30 @@
+# E3: Entities the alerts actually reference
+# SecurityAlert.Entities is a JSON *string*, so parse_json is required before
+# mv-expand. Used to cross-check the entity list the dashboard cached.
+
+id: E3-AlertEntities
+name: Entities referenced by the incident's alerts
+description: Entity inventory straight from alert evidence, with alert spread
+phase: 1
+requires: [incident]
+query: |
+  let alertIds =
+      SecurityIncident
+      | where TimeGenerated > ago(30d)
+      | where ProviderIncidentId == "{incident}" or tostring(IncidentNumber) == "{incident}"
+      | summarize arg_max(TimeGenerated, *) by IncidentNumber
+      | mv-expand AlertId = AlertIds
+      | extend AlertId = tostring(AlertId)
+      | distinct AlertId;
+  SecurityAlert
+  | where TimeGenerated > ago(30d)
+  | where SystemAlertId in (alertIds)
+  | mv-expand Entity = parse_json(Entities)
+  | extend EntityKind = tostring(Entity.Type),
+           EntityName = coalesce(tostring(Entity.Name), tostring(Entity.Address),
+                                 tostring(Entity.HostName), tostring(Entity.Url))
+  | where isnotempty(EntityName)
+  | summarize AlertsSeen = dcount(SystemAlertId), FirstSeen = min(TimeGenerated)
+            by EntityKind, EntityName
+  | order by AlertsSeen desc
+  | take 60

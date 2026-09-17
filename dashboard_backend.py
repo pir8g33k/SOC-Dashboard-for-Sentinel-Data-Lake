@@ -33,6 +33,8 @@ try:
     )
     DB_AVAILABLE = True
     init_database()
+    from triage_db import init_triage_schema
+    init_triage_schema()
 except ImportError:
     print("⚠️  Database module not available, falling back to JSON mode")
     DB_AVAILABLE = False
@@ -100,6 +102,10 @@ Session(app)
 
 cors_origins = os.getenv('CORS_ORIGINS', 'http://localhost:5000,http://127.0.0.1:5000')
 CORS(app, origins=[o.strip() for o in cors_origins.split(',')])
+
+# Autonomous triage + gated response actions
+from routes_triage import triage_bp
+app.register_blueprint(triage_bp)
 
 @app.after_request
 def set_security_headers(response):
@@ -293,6 +299,31 @@ def update_settings():
         'COPILOT_AUTO_ENRICH_ENABLED',
         'COPILOT_AUTO_ENRICH_MAX_PER_CYCLE',
         'COPILOT_WEBHOOK_SECRET',
+        # Autonomous triage
+        'TRIAGE_ENABLED',
+        'TRIAGE_AUTO_COMMENT_ENABLED',
+        'TRIAGE_ROUTING_MODE',
+        'FOUNDRY_DEPLOYMENT_FAST',
+        'FOUNDRY_DEPLOYMENT_DEEP',
+        'TRIAGE_MAX_PER_CYCLE',
+        'TRIAGE_BASELINE_DAYS',
+        'TRIAGE_EVIDENCE_PACK_ENABLED',
+        'TRIAGE_QUERY_DIR',
+        'TRIAGE_MIN_CONFIDENCE_FOR_ACTIONS',
+        'TRIAGE_PARTIAL_CONFIDENCE_CAP',
+        'TRIAGE_AUTO_CLOSE_FP_ENABLED',
+        'TRIAGE_AUTO_CLOSE_MIN_CONFIDENCE',
+        # Gated response actions
+        'RESPONSE_ACTIONS_ENABLED',
+        'RESPONSE_DRY_RUN',
+        'RESPONSE_ALLOW_ISOLATE_DEVICE',
+        'RESPONSE_ALLOW_REVOKE_SESSIONS',
+        'RESPONSE_ALLOW_DISABLE_ACCOUNT',
+        'RESPONSE_ALLOW_PUSH_IOC',
+        'RESPONSE_ALLOW_CLOSE_FP',
+        'RESPONSE_ISOLATION_TYPE',
+        'RESPONSE_IOC_CONFIDENCE',
+        'RESPONSE_FP_DETERMINATION',
     }
     updated = []
     for key, value in payload.items():
@@ -863,6 +894,10 @@ def get_features():
         'ioc_upload': _feature_enabled('IOC_UPLOAD_ENABLED'),
         'security_copilot': _feature_enabled('SECURITY_COPILOT_ENABLED'),
         'copilot_auto_enrich': _feature_enabled('COPILOT_AUTO_ENRICH_ENABLED'),
+        'autonomous_triage': _feature_enabled('TRIAGE_ENABLED'),
+        'response_actions': _feature_enabled('RESPONSE_ACTIONS_ENABLED'),
+        'response_dry_run': (get_config('RESPONSE_DRY_RUN', 'true') or 'true').strip().lower()
+                            in ('true', '1', 'yes', 'on'),
         'incidents_display_limit': incidents_display_limit,
     })
 

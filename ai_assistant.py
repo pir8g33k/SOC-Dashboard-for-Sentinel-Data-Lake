@@ -282,14 +282,16 @@ def ask_agent(
     *,
     user_token: str | None = None,
     triage_token: str | None = None,
+    deployment: str | None = None,
 ) -> dict:
     """Send a question to the Foundry Responses API with Sentinel MCP tools.
 
     Falls back to direct completion if MCP is unavailable.
-    Returns {"answer": str, "kql": str|None, "results": list|None, "error": str|None}
+    `deployment` overrides FOUNDRY_DEPLOYMENT for this call (model-tier routing).
+    Returns {"answer", "kql", "results", "tool_calls", "error"}
     """
     project_endpoint = get_config('FOUNDRY_PROJECT_ENDPOINT')
-    deployment = get_config('FOUNDRY_DEPLOYMENT') or ''
+    deployment = deployment or get_config('FOUNDRY_DEPLOYMENT') or ''
     if not project_endpoint:
         return ask_assistant(question, history)
 
@@ -356,7 +358,15 @@ def ask_agent(
             )
             item_types = [getattr(i, 'type', 'unknown') for i in resp.output]
             log.info('Agent response items: %s', item_types)
-            calls = [getattr(i, 'name', '') for i in resp.output if getattr(i, 'type', '') == 'tool_call']
+            # Match any call-shaped output item: the Responses API emits
+            # 'tool_call', 'mcp_call' and 'function_call' depending on version,
+            # and an exact 'tool_call' test silently reports zero tool use.
+            calls = [
+                getattr(i, 'name', '') or str(getattr(i, 'type', ''))
+                for i in resp.output
+                if 'call' in str(getattr(i, 'type', ''))
+            ]
+            calls = [c for c in calls if c]
             if calls:
                 log.info('MCP tools called: %s', calls)
             answer = ''
@@ -375,7 +385,8 @@ def ask_agent(
                     kql = answer[start:end].strip()
                 except ValueError:
                     pass
-            return {'answer': answer, 'kql': kql, 'results': None, 'error': None}
+            return {'answer': answer, 'kql': kql, 'results': None,
+                    'tool_calls': calls, 'error': None}
 
         def _invoke_with_fallback(tool_list: list) -> dict:
             try:
@@ -437,7 +448,7 @@ def ask_assistant(question: str, history: list[dict] | None = None) -> dict:
     """
     deployment = get_config('FOUNDRY_DEPLOYMENT')
     if not deployment:
-        return {'answer': '', 'kql': None, 'results': None,
+        return {'answer': '', 'kql': None, 'results': None, 'tool_calls': [],
                 'error': 'AI Assistant not configured — set FOUNDRY_ENDPOINT and FOUNDRY_DEPLOYMENT in Settings.'}
 
     messages: list = [{'role': 'system', 'content': SYSTEM_PROMPT}]
@@ -474,4 +485,7 @@ def ask_assistant(question: str, history: list[dict] | None = None) -> dict:
                 log.warning('Generated KQL failed: %s', exc)
                 error = 'Generated KQL query failed — check server logs'
 
-    return {'answer': answer, 'kql': kql, 'results': results, 'error': error}
+    # The direct path counts as retrieval only when the generated KQL ran.
+    return {'answer': answer, 'kql': kql, 'results': results,
+            'tool_calls': ['run_kql'] if results is not None else [],
+            'error': error}

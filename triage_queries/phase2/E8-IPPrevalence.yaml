@@ -1,0 +1,26 @@
+# E8: Tenant-wide prevalence of the incident's source IPs
+# The empirical test for "shared infrastructure". A CIDR range or an ASN lookup
+# describes who owns an IP; this shows how it is used in THIS tenant.
+#   High DistinctAccounts over many Days -> shared egress/VPN/proxy, proven.
+#   DistinctAccounts == 1              -> the shared-infrastructure hypothesis
+#                                         is eliminated, not merely unproven.
+
+id: E8-IPPrevalence
+name: Source IP prevalence across the tenant
+description: Distinct accounts, days seen and success counts per source IP
+phase: 2
+requires: [ip]
+query: |
+  SigninLogs
+  | where TimeGenerated > ago(30d)
+  | where IPAddress in ({ip_list})
+  | summarize DistinctAccounts = dcount(UserPrincipalName),
+              SignIns = count(),
+              Successful = countif(ResultType == 0),
+              DaysSeen = dcount(bin(TimeGenerated, 1d)),
+              SampleAccounts = make_set(UserPrincipalName, 5),
+              FirstSeen = min(TimeGenerated),
+              LastSeen = max(TimeGenerated)
+            by IPAddress
+  | order by DistinctAccounts desc
+  | take 20

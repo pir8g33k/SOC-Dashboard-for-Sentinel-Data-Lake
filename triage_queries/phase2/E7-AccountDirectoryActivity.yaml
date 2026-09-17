@@ -1,0 +1,19 @@
+# E7: Directory changes performed by or against the accounts
+# Catches the persistence step that follows a successful identity compromise:
+# MFA method added, role assignment, app credential added, forwarding rule.
+
+id: E7-AccountDirectoryActivity
+name: Directory audit activity for the accounts
+description: AuditLogs operations where the account is the actor or the target
+phase: 2
+requires: [account]
+query: |
+  let targets = {account_list};
+  AuditLogs
+  | where TimeGenerated > ago({days}d)
+  | extend Actor = tostring(parse_json(tostring(InitiatedBy)).user.userPrincipalName)
+  | extend TargetUpn = tostring(parse_json(tostring(TargetResources))[0].userPrincipalName)
+  | where Actor in~ (targets) or TargetUpn in~ (targets)
+  | project TimeGenerated, OperationName, Category, Result, Actor, TargetUpn
+  | order by TimeGenerated desc
+  | take 50

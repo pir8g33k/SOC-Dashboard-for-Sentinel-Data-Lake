@@ -1,0 +1,25 @@
+# E4: Sign-in profile for the incident's accounts
+# Supplies Verdict Gate 1 (baseline). LocationDetails is dynamic — parse_json
+# before dot access.
+
+id: E4-AccountSigninBaseline
+name: Account sign-in profile
+description: Volume, success/failure split, source IPs, countries and apps per account
+phase: 2
+requires: [account]
+query: |
+  SigninLogs
+  | where TimeGenerated > ago({days}d)
+  | where UserPrincipalName in~ ({account_list})
+  | extend Country = tostring(parse_json(tostring(LocationDetails)).countryOrRegion)
+  | summarize SignIns = count(),
+              Success = countif(ResultType == 0),
+              Failed = countif(ResultType != 0),
+              DistinctIPs = dcount(IPAddress),
+              IPs = make_set(IPAddress, 15),
+              Countries = make_set(Country, 10),
+              Apps = make_set(AppDisplayName, 10),
+              FirstSeen = min(TimeGenerated),
+              LastSeen = max(TimeGenerated)
+            by UserPrincipalName
+  | take 20

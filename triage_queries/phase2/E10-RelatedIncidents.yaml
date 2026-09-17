@@ -1,0 +1,30 @@
+# E10: Other incidents touching the same accounts in the last 30 days
+# Distinguishes a one-off from a campaign, and surfaces prior analyst verdicts
+# on the same entity — the cheapest false-positive check available.
+
+id: E10-RelatedIncidents
+name: Other recent incidents involving the same accounts
+description: Alert-to-incident rollup for the incident's accounts over 30 days
+phase: 2
+requires: [account]
+query: |
+  let targets = {account_list};
+  SecurityAlert
+  | where TimeGenerated > ago(30d)
+  | where Entities has_any (targets)
+  | summarize arg_max(TimeGenerated, *) by SystemAlertId
+  | project SystemAlertId, AlertName, AlertSeverity, TimeGenerated
+  | join kind=leftouter (
+      SecurityIncident
+      | where TimeGenerated > ago(30d)
+      | summarize arg_max(TimeGenerated, *) by IncidentNumber
+      | mv-expand AlertId = AlertIds
+      | extend AlertId = tostring(AlertId)
+      | project AlertId, IncidentNumber, IncidentTitle = Title,
+                IncidentStatus = Status, IncidentClassification = Classification
+    ) on $left.SystemAlertId == $right.AlertId
+  | summarize Alerts = count(), AlertNames = make_set(AlertName, 5),
+              LastSeen = max(TimeGenerated)
+            by IncidentNumber, IncidentTitle, IncidentStatus, IncidentClassification
+  | order by LastSeen desc
+  | take 25
