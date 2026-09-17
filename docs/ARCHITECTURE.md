@@ -37,6 +37,14 @@ graph TB
         COPILOT["security_copilot.py<br/>(enrichment orchestration)"]
     end
 
+    subgraph "Autonomous Triage & Response"
+        TRIAGE["triage_agent.py<br/>(routing, gates, guards)"]
+        TQUERIES["triage_queries.py<br/>(evidence pack runner)"]
+        TDB["triage_db.py<br/>(verdicts + action queue)"]
+        RESP["response_actions.py<br/>(gated containment)"]
+        TROUTES["routes_triage.py<br/>(blueprint)"]
+    end
+
     subgraph "External APIs"
         GRAPH["Microsoft Graph API<br/>(Secure Score, MDTI)"]
         DEFENDER["Microsoft Defender XDR<br/>(Incidents, Alerts)"]
@@ -57,6 +65,19 @@ graph TB
     BACKEND --> IOC
     BACKEND --> COPILOT
     COPILOT --> AI
+
+    BACKEND --> TROUTES
+    TROUTES --> TRIAGE
+    TROUTES --> RESP
+    TRIAGE --> TQUERIES
+    TRIAGE --> AI
+    TRIAGE --> TDB
+    TQUERIES --> KQL
+    RESP --> TDB
+    RESP --> IOC
+    RESP --> DEFENDER
+    RESP --> GRAPH
+    TDB --> DB
 
     HOURLY -->|"every 1 h"| APPEND
     APPEND --> DBMOD
@@ -175,6 +196,8 @@ All credentials and settings are managed through `config_manager.py` with two-ti
 | `attack_stories` | Cached AI-generated incident analyses | incident_id (PK), story (TEXT), model, created_at |
 | `cases` | Analyst-created investigation cases | id (PK), incident_id, title, notes, status, created_by, created_at |
 | `incident_enrichments` | Security Copilot enrichment results | id (AI PK), incident_id (FK), source, risk_score, summary, recommended_actions (JSON), entity_reputations (JSON), copilot_session_id, model, created_at |
+| `incident_triage` | Autonomous triage verdicts, newest wins | id (AI PK), incident_id (FK), verdict, confidence, evidence_grade, risk_score, severity_assessment, suggested_classification, suggested_determination, summary, mitre (JSON), rca (JSON), recommended_actions (JSON), entity_reputations (JSON), investigation_trace (JSON), model, model_tier, routing_reason, source, raw_response, created_at |
+| `response_actions` | Proposed / approved / executed containment actions | id (AI PK), incident_id (FK), triage_id (FK), action_type, target_type, target_value, resolved_target_id, reason, status, dry_run, requested_by, decided_by, result_message, api_status_code, created_at, decided_at, executed_at |
 
 ### Indexes
 - `idx_incidents_created` — fast date range queries
@@ -182,6 +205,16 @@ All credentials and settings are managed through `config_manager.py` with two-ti
 - `idx_alerts_incident` / `idx_alerts_timestamp` — join + range
 - `idx_entities_incident` / `idx_entities_type` — entity lookups
 - `idx_enrichments_incident` / `idx_enrichments_created` — enrichment lookups
+- `idx_triage_incident` / `idx_triage_created` / `idx_triage_verdict` — triage lookups + stats
+- `idx_actions_incident` / `idx_actions_status` / `idx_actions_created` — approval queue
+
+### `investigation_trace`
+
+`incident_triage.investigation_trace` is the audit record behind a verdict: every
+evidence query with its row count and status, the agent tool calls, the four verdict
+gate answers, which gates passed or failed, and every guard adjustment applied. It is
+what lets an analyst — or a customer's auditor — see which query produced which
+finding months later. See [AUTONOMOUS_TRIAGE.md](AUTONOMOUS_TRIAGE.md) §6.
 
 ## Incident Actions & Comment Posting
 
@@ -193,6 +226,25 @@ The dashboard can write back to Defender XDR via the Graph Security API:
 | Escalate | `PATCH /security/incidents/{id}` | Bumps severity + adds `Escalated` tag |
 | Close | `PATCH /security/incidents/{id}` | Sets `status=resolved` + classification |
 | Comment | `POST /security/incidents/{id}/comments` | **Max 1000 chars** — truncated automatically |
+
+### Response Actions (gated)
+
+Separate from the actions above: these change state on a production asset and are
+never executed by triage itself. Each is recorded as a proposal, requires an admin
+approval call, is gated by its own `RESPONSE_ALLOW_*` flag re-checked at execution,
+and is a no-op recorded as `simulated` while `RESPONSE_DRY_RUN` is on (the default).
+
+| Action | Endpoint | Permission |
+|--------|----------|------------|
+| Isolate device | `POST {mde}/machines/{id}/isolate` | Machine.Isolate |
+| Revoke sessions | `POST /users/{id}/revokeSignInSessions` | User.RevokeSessions.All |
+| Disable account | `PATCH /users/{id}` → `accountEnabled: false` | User.ReadWrite.All |
+| Push indicator | Sentinel TI `createIndicator` (via `ioc_upload.py`) | Microsoft Sentinel Contributor |
+| Close as FP | `PATCH /security/incidents/{id}` | SecurityIncident.ReadWrite.All |
+
+Targets are resolved against the live MDE machine inventory and Entra directory; an
+ambiguous or missing match fails the action rather than guessing. The audit comment
+posted back to the incident states the real outcome — success, failure or dry run.
 
 **Graph comment limit:** The Graph Security API enforces a **1000-character maximum** per comment.
 `graph_post_comment()` in `fetch_live_data.py` truncates to 1000 chars as a safety net.
@@ -226,6 +278,8 @@ All application-level logs appear in `/var/log/soc-dashboard/error.log`.
 | Scheduler | schedule 1.2 / systemd timer (production) |
 | AI | Azure AI Foundry (OpenAI), azure-identity, Sentinel MCP tools |
 | Enrichment | Security Copilot (via Foundry agent), AI Analysis (direct) |
+| Triage | Autonomous verdicts with a YAML evidence query pack (pyyaml 6.0) |
+| Response | Defender for Endpoint API, Microsoft Graph, Sentinel TI — all behind approval gates |
 | KQL | Log Analytics REST API (ad-hoc queries from frontend) |
 | Config | python-dotenv 1.0 |
 | WSGI | gunicorn (production) |

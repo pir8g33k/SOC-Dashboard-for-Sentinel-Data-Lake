@@ -201,6 +201,16 @@ ssh root@<LXC_IP> 'systemctl restart dashboard'
 | Microsoft Graph | `SecurityEvents.Read.All` | Application | Read security events / Secure Score |
 | Microsoft Graph | `User.Read.All` | Application | User lookup |
 | Microsoft Graph | `ThreatIntelligence.Read.All` | Application | MDTI articles *(optional — requires Defender TI license)* |
+| Microsoft Graph | `User.RevokeSessions.All` | Application | Revoke sign-in sessions *(optional — only for `RESPONSE_ALLOW_REVOKE_SESSIONS`)* |
+| Microsoft Graph | `User.ReadWrite.All` | Application | Disable a compromised account *(optional — only for `RESPONSE_ALLOW_DISABLE_ACCOUNT`)* |
+| Defender for Endpoint | `Machine.Read.All` | Application | Resolve a device name to an MDE machine id *(optional — only for `RESPONSE_ALLOW_ISOLATE_DEVICE`)* |
+| Defender for Endpoint | `Machine.Isolate` | Application | Isolate a device *(optional — only for `RESPONSE_ALLOW_ISOLATE_DEVICE`)* |
+
+> **Response action permissions are optional and additive.** The dashboard runs fully
+> without them; each is needed only for the matching `RESPONSE_ALLOW_*` toggle. Grant
+> the narrowest set you intend to use — `User.ReadWrite.All` in particular permits
+> directory writes well beyond `accountEnabled`, so skip it unless you enable account
+> disable. See [docs/AUTONOMOUS_TRIAGE.md](docs/AUTONOMOUS_TRIAGE.md) §4.
 
 ### Required Delegated Permissions
 
@@ -275,6 +285,28 @@ VIRUSTOTAL_ENABLED=true
 CLOSE_INCIDENT_ENABLED=false
 DB_PATH=/var/lib/soc-dashboard/soc_dashboard.db
 CONFIG_KEY_PATH=/var/lib/soc-dashboard/.encryption_key
+
+# Optional — Autonomous Triage (all default off/safe)
+TRIAGE_ENABLED=false
+TRIAGE_AUTO_COMMENT_ENABLED=false
+TRIAGE_ROUTING_MODE=hybrid                 # hybrid | always_fast | always_deep
+FOUNDRY_DEPLOYMENT_FAST=                   # falls back to FOUNDRY_DEPLOYMENT
+FOUNDRY_DEPLOYMENT_DEEP=                   # falls back to FOUNDRY_DEPLOYMENT
+TRIAGE_MAX_PER_CYCLE=10
+TRIAGE_BASELINE_DAYS=7
+TRIAGE_EVIDENCE_PACK_ENABLED=true
+TRIAGE_MIN_CONFIDENCE_FOR_ACTIONS=70
+TRIAGE_AUTO_CLOSE_FP_ENABLED=false
+TRIAGE_AUTO_CLOSE_MIN_CONFIDENCE=90
+
+# Optional — Gated Response Actions (all default off; dry run defaults ON)
+RESPONSE_ACTIONS_ENABLED=false
+RESPONSE_DRY_RUN=true
+RESPONSE_ALLOW_ISOLATE_DEVICE=false
+RESPONSE_ALLOW_REVOKE_SESSIONS=false
+RESPONSE_ALLOW_DISABLE_ACCOUNT=false
+RESPONSE_ALLOW_PUSH_IOC=false
+RESPONSE_ALLOW_CLOSE_FP=false
 ```
 
 ### Config Management
@@ -319,6 +351,15 @@ Secrets (`CLIENT_SECRET`, API keys) are Fernet-encrypted at rest in the database
 | `/api/incidents/<id>/copilot-enrich` | POST | `@require_login` | Security Copilot enrichment via Foundry agent — risk score, entity reputations, actions (requires `SECURITY_COPILOT_ENABLED`) |
 | `/api/incidents/<id>/enrichment` | GET | `@require_login` | Return latest enrichment data for an incident |
 | `/api/webhooks/copilot-enrichment` | POST | HMAC | Logic App webhook callback for async enrichment results |
+| `/api/incidents/<id>/triage` | POST | `@require_login` | Run autonomous triage — verdict, confidence, RCA, action proposals (requires `TRIAGE_ENABLED`; `{"force": true}` re-runs) |
+| `/api/incidents/<id>/triage` | GET | `@require_login` | Latest stored triage verdict + its proposed actions |
+| `/api/incidents/<id>/triage/export` | GET | `@require_login` | Download the triage record as a Markdown RCA document |
+| `/api/incidents/<id>/actions` | GET | `@require_login` | Response actions for one incident |
+| `/api/triage-stats` | GET | `@require_login` | Verdict distribution, evidence grades, action outcomes (`?days=`) |
+| `/api/response/gates` | GET | `@require_login` | Which response actions this deployment is permitted to perform |
+| `/api/response/actions` | GET | `@require_login` | Response action queue (`?status=proposed`, `?incident_id=`, `?limit=`) |
+| `/api/response/actions/<id>/approve` | POST | `@require_admin` | Approve and execute a proposed containment action |
+| `/api/response/actions/<id>/reject` | POST | `@require_login` | Decline a proposed action with a recorded reason |
 
 ---
 
@@ -341,7 +382,12 @@ Secrets (`CLIENT_SECRET`, API keys) are Fernet-encrypted at rest in the database
 | **AI Analysis** | Lightweight AI incident analysis with markdown-rendered output. Auto-posts comment to Sentinel with 2-minute dedup window. Toggle: `AI_ASSISTANT_ENABLED` + `AI_AUTO_COMMENT_ENABLED` |
 | **KQL Console** | Run ad-hoc KQL queries against Log Analytics with 11 built-in templates, Ctrl+Enter shortcut, and tabular results. Toggle: `KQL_CONSOLE_ENABLED` |
 | **Attack Stories** | AI-generated incident narratives cached in SQLite — timeline, entities, MITRE mapping, next steps |
-| **Feature Toggles** | 11 admin-controlled toggles: AI Assistant, KQL Console, Defender TI Articles (MDTI), AI Auto-Enrich, AI Auto-Comment, Close Incident, Logs Viewer, Security Copilot, Copilot Auto-Enrich, Copilot Auto-Enrich Max Per Cycle, VirusTotal |
+| **Autonomous Triage** | Per-incident verdict (`TruePositive`/`FalsePositive`/`BenignPositive`/`Undetermined`) with confidence, Graph classification + determination, MITRE mapping, root-cause analysis and CAPA. Runs on ingest or on demand. Two-tier model routing (cheap vs reasoning deployment) picked from severity, alert count and technique count. Toggle: `TRIAGE_ENABLED` |
+| **Evidence Query Pack** | 10 version-controlled KQL queries in `triage_queries/` run *before* the model, so verdicts are reproducible and reviewable. Includes a 90-day source-IP baseline comparison and a tenant-wide IP prevalence test. Zero rows is recorded as a confirmed negative finding; a failed query as unavailable, never as clean. Toggle: `TRIAGE_EVIDENCE_PACK_ENABLED` |
+| **Verdict Gates** | A verdict must answer four gates — baseline, alternative hypotheses, attribution, negative findings — or its confidence is capped. Ungrounded answers are forced to `Undetermined` and cannot propose containment |
+| **Gated Response Actions** | MDE device isolation, Entra session revocation, account disable, Sentinel TI indicator push and false-positive closure. Every action is a proposal until an admin approves it; each is gated by its own `RESPONSE_ALLOW_*` flag, and `RESPONSE_DRY_RUN` defaults **on**. Audit comments state the real outcome, including failures and dry runs. Toggle: `RESPONSE_ACTIONS_ENABLED` |
+| **RCA Export** | Per-incident Markdown root-cause report with the full investigation audit trail (every query, its row count and status, tool calls, gate answers). Indicators are defanged |
+| **Feature Toggles** | 22 admin-controlled toggles: AI Assistant, KQL Console, Defender TI Articles (MDTI), AI Auto-Enrich, AI Auto-Comment, Close Incident, Logs Viewer, Security Copilot, Copilot Auto-Enrich, Copilot Auto-Enrich Max Per Cycle, VirusTotal, Autonomous Triage, Triage Auto-Comment, Triage Evidence Pack, Triage Auto-Close FP, Response Actions, Response Dry Run, and the five per-action `RESPONSE_ALLOW_*` gates |
 | **Async Refresh** | Background data refresh via `/api/refresh` — frontend polls status with animated progress. systemd timer (hourly) + configurable interval via settings |
 
 ## Project Structure
@@ -357,6 +403,16 @@ SOC-Dashboard/
 ├── security_copilot.py        # Security Copilot enrichment — prompt builder, response parser, webhook
 ├── sentinel_kql.py            # KQL query engine — Log Analytics REST API
 ├── ioc_upload.py              # IOC upload engine — Sentinel TI API + feed ingestion
+├── triage_agent.py            # Autonomous triage — model routing, verdict contract, gates, guards
+├── triage_queries.py          # Evidence pack loader/runner — validated KQL substitution
+├── triage_db.py               # Triage + response_actions schema, migration and CRUD
+├── response_actions.py        # Gated containment executors (MDE, Graph, Sentinel TI)
+├── routes_triage.py           # Flask blueprint — triage + response action API
+├── triage_queries/            # Version-controlled evidence queries
+│   ├── phase1/                # Incident record, alerts, entities
+│   └── phase2/                # Account baselines, IP prevalence, TI, related incidents
+├── tests/
+│   └── test_triage.py         # 94 hermetic tests (no Azure, no credentials, no DB)
 ├── append_data.py             # Incremental data append logic
 ├── hourly_refresh.py          # Scheduler with timeout wrapper
 ├── soc-dashboard-live.html    # Single-page dashboard frontend (Chart.js, vanilla JS)
@@ -376,6 +432,7 @@ SOC-Dashboard/
 │   └── update_from_git.sh     # Git-based pull + service restart
 ├── docs/
 │   ├── ARCHITECTURE.md        # System architecture & data flow
+│   ├── AUTONOMOUS_TRIAGE.md   # Triage pipeline, controls, permissions, rollout
 │   ├── INVENTORY.md           # File-by-file inventory
 │   └── SECURITY_FIXES.md      # Tracked vulnerability patches
 └── .github/
